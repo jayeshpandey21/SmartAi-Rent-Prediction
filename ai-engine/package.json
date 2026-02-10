@@ -1,0 +1,21 @@
+{
+  "name": "smartrent-ai-engine",
+  "version": "1.0.0",
+  "description": "AI Prediction Engine for SmartRent",
+  "main": "main.py",
+  "type": "module",
+  "scripts": {
+    "start": "uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+    "train": "python training/train_model.py"
+  },
+  "dependencies": {
+    "fastapi": "^0.109.0",
+    "uvicorn": "^0.25.0",
+    "pydantic": "^2.5.0",
+    "numpy": "^1.26.0",
+    "pandas": "^2.1.0",
+    "scikit-learn": "^1.3.0",
+    "joblib": "^1.3.0",
+    "python-multipart": "^0.0.6"
+  }
+}
