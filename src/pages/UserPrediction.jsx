@@ -3,6 +3,42 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import axios from 'axios';
+
+// Base URL of the Flask ML backend (backend/app.py)
+const PREDICTION_API_URL = 'http://localhost:5000/predict';
+
+/**
+ * Maps this form's fields to the payload the trained Random Forest
+ * model (backend/app.py) expects. A couple of fields the model was
+ * trained on aren't collected by this form directly, so they're
+ * reasonably approximated from what IS collected:
+ *  - total_floors: not asked in the form, estimated from floorNumber
+ *  - distance_to_metro_km: approximated from the "Metro Station" amenity checkbox
+ */
+const buildBackendPayload = (data) => {
+  const furnishingMap = {
+    'Unfurnished': 'Unfurnished',
+    'Semi': 'Semi-Furnished',
+    'Fully': 'Fully-Furnished',
+  };
+
+  const estimatedTotalFloors = Math.max(Number(data.floorNumber) + 3, 10);
+  const distanceToMetroKm = data.nearbyAmenities.includes('Metro Station') ? 0.6 : 3.5;
+  const amenitiesScore = Math.round((data.nearbyAmenities.length / 8) * 10);
+
+  return {
+    city: data.city || 'Bangalore',
+    bhk: Number(data.bhk),
+    area_sqft: Number(data.sqft),
+    furnishing: furnishingMap[data.furnishing] || 'Unfurnished',
+    floor: Number(data.floorNumber),
+    total_floors: estimatedTotalFloors,
+    building_age_years: Number(data.propertyAge),
+    distance_to_metro_km: distanceToMetroKm,
+    amenities_score: amenitiesScore,
+  };
+};
 
 /**
  * SmartRent AI - Trained Rental Estimation Engine
@@ -685,6 +721,7 @@ export default function UserPrediction() {
   const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState([]);
+  const [backendError, setBackendError] = useState(null);
 
   const amenities = [
     'Parking', 'Security', 'Power Backup', 'Gym', 
@@ -898,7 +935,7 @@ export default function UserPrediction() {
     return isValid;
   }, [formData]);
 
-  const handleSubmit = useCallback((e) => {
+  const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
 
     if (!validateForm()) {
@@ -906,6 +943,7 @@ export default function UserPrediction() {
     }
 
     setLoading(true);
+    setBackendError(null);
 
     setTimeout(() => {
       const resultElement = document.getElementById('prediction-result');
@@ -919,29 +957,52 @@ export default function UserPrediction() {
       area: formData.sqft
     };
 
-    const result = predictRent(predictionFormData);
-    setPrediction(result);
+    // Local lookup table is still used for city metadata (tier, classification,
+    // market density, min/max display bounds) shown as informational chips -
+    // NOT for the actual rent number anymore.
+    const localMetadata = predictRent(predictionFormData);
 
-    if (user) {
-      const predictions = getPredictions();
-      const newPrediction = {
-        _id: 'pred_' + Date.now(),
-        userId: user._id,
-        userEmail: user.email,
-        ...predictionFormData,
-        predictedRent: result.predictedRent,
-        confidenceScore: result.confidenceScore,
-        cityData: result.cityData,
-        explanation: result.explanation,
-        modelVersion: result.modelVersion,
-        createdAt: new Date().toISOString()
+    try {
+      const payload = buildBackendPayload(formData);
+      const response = await axios.post(PREDICTION_API_URL, payload);
+
+      const result = {
+        ...localMetadata,
+        predictedRent: response.data.predicted_rent,
+        explanation: 'Predicted by a trained Random Forest regression model (scikit-learn), using property size, city, furnishing, floor, building age, and nearby amenities as input features.',
+        modelVersion: 'SmartRent-AI-RandomForest-v1',
       };
-      predictions.push(newPrediction);
-      savePredictions(predictions);
-      setHistory(prev => [newPrediction, ...prev]);
-    }
 
-    setLoading(false);
+      setPrediction(result);
+
+      if (user) {
+        const predictions = getPredictions();
+        const newPrediction = {
+          _id: 'pred_' + Date.now(),
+          userId: user._id,
+          userEmail: user.email,
+          ...predictionFormData,
+          predictedRent: result.predictedRent,
+          confidenceScore: result.confidenceScore,
+          cityData: result.cityData,
+          explanation: result.explanation,
+          modelVersion: result.modelVersion,
+          createdAt: new Date().toISOString()
+        };
+        predictions.push(newPrediction);
+        savePredictions(predictions);
+        setHistory(prev => [newPrediction, ...prev]);
+      }
+    } catch (err) {
+      console.error('Prediction API error:', err);
+      setBackendError(
+        err.response?.data?.error ||
+        'Could not reach the prediction server. Make sure the backend is running: cd backend && python app.py'
+      );
+      setPrediction(null);
+    } finally {
+      setLoading(false);
+    }
   }, [formData, user, validateForm]);
 
   const getChartData = () => {
@@ -1145,6 +1206,11 @@ export default function UserPrediction() {
 
           {/* Prediction Result */}
           <motion.div id="prediction-result" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }}>
+            {backendError && (
+              <div className="glass rounded-2xl p-4 mb-4 border border-red-500/50 bg-red-500/10 text-red-300 text-sm">
+                {backendError}
+              </div>
+            )}
             <AnimatePresence mode="wait">
               {prediction ? (
                 <motion.div key="result" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="glass rounded-2xl p-6">
